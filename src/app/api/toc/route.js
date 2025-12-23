@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 
+export const dynamic = 'force-dynamic'; // <--- הוסף
+
 export async function GET() {
     try {
         // שליפת כל ה"סימנים" שקיימים בספר, מסודרים לפי הסדר
