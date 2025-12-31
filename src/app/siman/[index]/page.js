@@ -1,18 +1,15 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import TableOfContents from '@/components/TableOfContents';
-// הייבוא של הרכיבים החדשים שלנו:
 import SimanEditor from '@/components/editor/SimanEditor';
 import CommentsSidebar from '@/components/comments/CommentsSidebar';
 
 export default function SimanPage() {
     const params = useParams();
-    const router = useRouter();
-
-    // --- State Management ---
     const [segments, setSegments] = useState([]);
+    const [simanTitle, setSimanTitle] = useState("");
     const [loading, setLoading] = useState(true);
     const [activeSegmentId, setActiveSegmentId] = useState(null);
     const [focusedSegmentId, setFocusedSegmentId] = useState(null);
@@ -24,226 +21,206 @@ export default function SimanPage() {
 
     const currentIndex = parseInt(params.index) || 1;
 
-    // כל פעם שהדף נטען או שה currentIndex משתנה. לוקחים את הDATA ששיך לעמוד הזה. עפ ה currentIndex
     useEffect(() => {
         async function fetchData() {
             setLoading(true);
             try {
                 const res = await fetch(`/api/siman?i=${currentIndex}`);
                 const json = await res.json();
-                if (json.data) setSegments(json.data);
-            } catch (err) { console.error(err); } finally { setLoading(false); }
+                if (json.data) {
+                    setSegments(json.data);
+                    setSimanTitle(json.simanTitle || "");
+                }
+            } catch (err) { console.error(err); }
+            finally { setLoading(false); }
         }
         fetchData();
     }, [currentIndex]);
 
-    // אחראי על כל פעם שבוחרים סעיף, לטעון את הפירושים שלו
+    // שליפת הפיד מהקבוצה האחרונה המשויכת לגרסה
     useEffect(() => {
         if (!activeSegmentId || !segments.length) return;
-        const activeSeg = segments.find(s => s.index_label === activeSegmentId);
+        const activeSeg = segments.find(s => s.seif_id === activeSegmentId);
         if (activeSeg) fetchFeed(activeSeg.version_id);
     }, [activeSegmentId, segments]);
-
 
     const fetchFeed = async (versionId) => {
         try {
             const res = await fetch(`/api/annotations/list?versionId=${versionId}`);
             const json = await res.json();
-            setFeedComments(json.list || []);
+
+            // הגנה מפני כפילויות UUID ברמת ה-UI
+            const unique = [];
+            const seen = new Set();
+            (json.list || []).forEach(c => {
+                if (!seen.has(c.uuid)) {
+                    seen.add(c.uuid);
+                    unique.push(c);
+                }
+            });
+            setFeedComments(unique);
         } catch (err) { console.error(err); }
     };
+    // בתוך SimanPage.js - החלף את פונקציות השמירה הקיימות:
 
-    // --- ניווט ופוקוס ---
-    const goNextSiman = () => { setFocusedSegmentId(null); router.push(`/siman/${currentIndex + 1}`); };
-    const enterFocusMode = (segId) => { setFocusedSegmentId(segId); setActiveSegmentId(segId); };
-    const exitFocusMode = () => setFocusedSegmentId(null);
-
-    const navigateFocusedSegment = (direction) => {
-        const idx = segments.findIndex(s => s.index_label === focusedSegmentId);
-        const newIdx = idx + direction;
-        if (newIdx >= 0 && newIdx < segments.length) {
-            const newSeg = segments[newIdx];
-            setFocusedSegmentId(newSeg.index_label); setActiveSegmentId(newSeg.index_label);
-        }
-    };
-
-    // --- לוגיקה עסקית (שמירה, מחיקה וכו') ---
-
-    // 1. שמירת טקסט (מעבירים את זה ל-SimanEditor)
-    const saveTextChange = async (versionId, newJson, updatedQuotes) => {
-        setSegments(prev => prev.map(seg => {
-            if (seg.version_id === versionId) {
-                return { ...seg, content_json: newJson };
-            }
-            return seg;
-        }));
+    const saveTextChange = async (versionId, newJson) => {
+        const currentSegment = segments.find(seg => seg.version_id === versionId);
+        if (!currentSegment) return;
 
         try {
-            await fetch('/api/save', {
+            const res = await fetch('/api/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    seif_id: currentSegment.seif_id,
                     version_id: versionId,
-                    content_json: newJson,
-                    annotation: null,
-                    updatedQuotes: updatedQuotes
+                    content_json: newJson
                 })
             });
-            fetchFeed(versionId);
-        } catch (err) {
-            console.error(err);
-            alert('שגיאה בשמירת הטקסט');
-        }
-    };
+            const data = await res.json();
 
-    // 2. יצירת הערה חדשה (מופעל מתוך SimanEditor)
-    const startNewComment = (quote, uuid, newJson, versionId) => {
-        setLoadedComments([]); setCurrentCommentIndex(0);
-        setDraftComment({ quote, uuid, newJson, versionId, content: '', isExisting: false });
-    };
-
-    // 3. טעינת הערה קיימת (מופעל מתוך SimanEditor או CommentsSidebar)
-    const loadExistingComments = async (uuids, quoteText = "") => {
-        if (loadedComments.length > 0 && loadedComments[0].uuid === uuids[0] && loadedComments.length === uuids.length) return;
-        try {
-            const promises = uuids.map(id => fetch(`/api/annotation?id=${id}`).then(res => res.json()));
-            const results = await Promise.all(promises);
-            const commentsData = results.map((res, index) => ({
-                uuid: uuids[index],
-                content: res.content || "",
-                quote: quoteText,
-                isExisting: true
-            }));
-            setLoadedComments(commentsData); setCurrentCommentIndex(0); setDraftComment(commentsData[0]);
-        } catch (err) { console.error(err); }
-    };
-
-    const navigateComments = (dir) => {
-        const newIndex = currentCommentIndex + dir;
-        if (newIndex >= 0 && newIndex < loadedComments.length) {
-            setCurrentCommentIndex(newIndex); setDraftComment(loadedComments[newIndex]);
-        }
+            if (data.success) {
+                // עדכון ה-State: אם חזר versionId חדש (כי הטקסט השתנה), נעדכן אותו
+                setSegments(prev => prev.map(s =>
+                    s.seif_id === currentSegment.seif_id
+                        ? { ...s, version_id: data.versionId, content_json: newJson }
+                        : s
+                ));
+            }
+        } catch (err) { console.error("Save Text Error:", err); }
     };
 
     const saveComment = async () => {
         if (!draftComment) return;
+
         try {
             if (draftComment.isExisting) {
-                await fetch('/api/annotation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uuid: draftComment.uuid, content: draftComment.content }) });
+                // ... עדכון פירוש קיים (PUT) - ללא שינוי ...
+                await fetch('/api/annotation', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: draftComment.uuid, content: draftComment.content })
+                });
+                setFeedComments(prev => prev.map(c => c.uuid === draftComment.uuid ? { ...c, content: draftComment.content } : c));
             } else {
-                await fetch('/api/save', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                // הזרקת התוכן ל-JSON החדש
+                const enrichedJson = JSON.parse(JSON.stringify(draftComment.newJson));
+                const inject = (node) => {
+                    if (node.marks) {
+                        node.marks.forEach(m => {
+                            if (m.type === 'comment') {
+                                if (m.attrs.id === draftComment.uuid) m.attrs.content = draftComment.content;
+                                else {
+                                    const ex = feedComments.find(c => c.uuid === m.attrs.id);
+                                    if (ex) m.attrs.content = ex.content;
+                                }
+                            }
+                        });
+                    }
+                    if (node.content) node.content.forEach(inject);
+                };
+                inject(enrichedJson);
+
+                const res = await fetch('/api/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        seif_id: draftComment.seifId,
                         version_id: draftComment.versionId,
-                        content_json: draftComment.newJson,
-                        annotation: { uuid: draftComment.uuid, text: draftComment.content, quote: draftComment.quote }
+                        content_json: enrichedJson
                     })
                 });
 
-                setSegments(prev => prev.map(seg => {
-                    if (seg.version_id === draftComment.versionId) {
-                        return { ...seg, content_json: draftComment.newJson };
-                    }
-                    return seg;
-                }));
+                const data = await res.json();
+                if (data.success) {
+                    // עדכון ה-State עם ה-JSON וה-versionId שחזר
+                    setSegments(prev => prev.map(s =>
+                        s.seif_id === draftComment.seifId
+                            ? { ...s, version_id: data.versionId, content_json: enrichedJson }
+                            : s
+                    ));
+                    fetchFeed(data.versionId);
+                }
             }
             setDraftComment(null);
-            fetchFeed(draftComment.versionId);
-        } catch (err) { alert('שגיאה'); }
+        } catch (err) { console.error("Save Comment Error:", err); }
     };
 
-    const deleteComment = async () => {
-        if (!draftComment?.uuid) return;
-        if (!confirm('למחוק?')) return;
+    const startNewComment = (quote, uuid, newJson, versionId) => {
+        const currentSeg = segments.find(s => s.version_id === versionId);
+        setDraftComment({
+            quote, uuid, newJson, versionId,
+            seifId: currentSeg?.seif_id,
+            content: '', isExisting: false
+        });
+    };
+
+    const loadExistingComments = async (uuids, quoteText = "") => {
         try {
-            await fetch(`/api/annotation?id=${draftComment.uuid}&versionId=${draftComment.versionId || activeSegmentId}`, { method: 'DELETE' });
-
-            // רענון הנתונים כדי לנקות את הצהוב
-            const res = await fetch(`/api/siman?i=${currentIndex}`);
-            const json = await res.json();
-            setSegments(json.data);
-
-            setDraftComment(null);
-            const activeSeg = segments.find(s => s.index_label === activeSegmentId);
-            if (activeSeg) fetchFeed(activeSeg.version_id);
-
-        } catch (err) { alert('שגיאה'); }
+            const promises = uuids.map(id => fetch(`/api/annotation?id=${id}`).then(res => res.json()));
+            const results = await Promise.all(promises);
+            const data = results.map((res, i) => ({ uuid: uuids[i], content: res.content || "", quote: quoteText, isExisting: true }));
+            setLoadedComments(data);
+            setCurrentCommentIndex(0);
+            setDraftComment(data[0]);
+        } catch (err) { console.error(err); }
     };
 
-    const segmentsToDisplay = focusedSegmentId ? segments.filter(s => s.index_label === focusedSegmentId) : segments;
-
-    // --- הרינדור (View) ---
     return (
-        <main className="h-screen bg-[#F7F7F5] flex flex-col overflow-hidden font-sans text-slate-900">
-            <header className="bg-white border-b border-gray-200 h-14 flex items-center justify-between px-6 z-30 shrink-0 shadow-sm">
-                <div className="flex items-center gap-3">
-                    <h1 className="text-lg font-bold text-gray-800">שולחן ערוך</h1>
-                    <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-1 rounded-md">אורח חיים / סימן {currentIndex}</span>
-                </div>
+        <main className="h-screen bg-[#F7F7F5] flex flex-col overflow-hidden font-sans">
+            <header className="bg-white border-b h-14 flex items-center justify-between px-6 z-30 shadow-sm">
+                <h1 className="text-lg font-bold">שולחן ערוך - עורך גרסאות</h1>
             </header>
 
             <div className="flex flex-1 overflow-hidden">
-                {/* 1. תוכן עניינים */}
-                <div className={`hidden md:block z-20 shadow-[1px_0_10px_rgba(0,0,0,0.03)] bg-white transition-all duration-300 ${focusedSegmentId ? 'w-0 overflow-hidden opacity-0' : 'w-64 opacity-100'}`}>
+                <div className={`hidden md:block bg-white transition-all ${focusedSegmentId ? 'w-0 opacity-0' : 'w-64 opacity-100'}`}>
                     <TableOfContents />
                 </div>
 
-                {/* 2. אזור הטקסט המרכזי */}
-                <div className="flex-1 overflow-y-auto bg-[#F7F7F5] relative scroll-smooth">
-                    <div className="max-w-[750px] mx-auto py-12 px-8 min-h-screen">
+                <div className="flex-1 overflow-y-auto relative scroll-smooth bg-[#F7F7F5]">
+                    <div className="max-w-[750px] mx-auto py-12 px-8">
                         {focusedSegmentId && (
-                            <button onClick={exitFocusMode} className="mb-8 flex items-center gap-2 text-gray-500 hover:text-blue-600 font-medium transition-colors">
-                                <span className="text-xl">→</span> חזרה לרשימה המלאה
+                            <button onClick={() => setFocusedSegmentId(null)} className="mb-8 text-gray-500 hover:text-blue-600 font-medium">
+                                → חזרה לכל הסימן
                             </button>
                         )}
+                        {!loading && !focusedSegmentId && simanTitle && (
+                            <h2 className="text-3xl font-serif font-bold text-center mb-10 border-b-2 pb-6">{simanTitle}</h2>
+                        )}
 
-                        {loading ? <div className="text-center mt-20 text-gray-400">טוען סימן...</div> :
-                            segmentsToDisplay.map((seg) => (
+                        {loading ? <div className="text-center mt-20 text-gray-400 font-torah">טוען נתונים...</div> : (
+                            (focusedSegmentId ? segments.filter(s => s.seif_id === focusedSegmentId) : segments).map((seg) => (
                                 <SimanEditor
-                                    key={seg.index_label}
-                                    id={`seg-${seg.index_label}`}
+                                    key={seg.seif_id}
+                                    id={`seg-${seg.seif_id}`}
                                     initialContent={seg.content_json}
                                     label={`סעיף ${seg.index_label}`}
                                     versionId={seg.version_id}
-                                    isActive={activeSegmentId === seg.index_label}
-                                    isFocused={!!focusedSegmentId}
-                                    // כאן אנחנו מעבירים את הפונקציות לילדים:
-                                    onClick={() => setActiveSegmentId(seg.index_label)}
-                                    onZoom={() => enterFocusMode(seg.index_label)}
+                                    isActive={activeSegmentId === seg.seif_id}
+                                    isFocused={focusedSegmentId === seg.seif_id}
+                                    onClick={() => setActiveSegmentId(seg.seif_id)}
+                                    onZoom={() => { setFocusedSegmentId(seg.seif_id); setActiveSegmentId(seg.seif_id); }}
                                     onNewComment={startNewComment}
                                     onCommentClick={loadExistingComments}
                                     onSaveTextChange={saveTextChange}
                                 />
-                            ))}
-
-                        {/* ניווט תחתון (לא השתנה) */}
-                        {focusedSegmentId && segments.length > 0 && (
-                            <div className="flex justify-between mt-8 border-t pt-8 text-sm font-bold text-gray-500">
-                                <button onClick={() => navigateFocusedSegment(-1)} disabled={segments[0].index_label === focusedSegmentId} className="hover:text-blue-600 disabled:opacity-30">→ סעיף קודם</button>
-                                <button onClick={() => navigateFocusedSegment(1)} disabled={segments[segments.length - 1].index_label === focusedSegmentId} className="hover:text-blue-600 disabled:opacity-30">סעיף הבא ←</button>
-                            </div>
-                        )}
-
-                        {!loading && !focusedSegmentId && segments.length > 0 && (
-                            <div className="mt-12 flex justify-center border-t border-gray-200 pt-8 pb-20">
-                                <button onClick={goNextSiman} className="bg-white border border-gray-300 text-gray-700 px-6 py-2 rounded-full font-medium hover:bg-gray-50 shadow-sm transition-all">לסימן הבא ({currentIndex + 1}) ←</button>
-                            </div>
+                            ))
                         )}
                     </div>
                 </div>
 
-                {/* 3. צד שמאל - הערות */}
-                <aside className="w-[420px] bg-white border-r border-gray-200 flex flex-col shadow-xl z-30">
+                <aside className="w-[420px] bg-white border-r shadow-xl z-30 flex flex-col">
                     <CommentsSidebar
                         draftComment={draftComment}
                         loadedComments={loadedComments}
                         currentCommentIndex={currentCommentIndex}
                         feedComments={feedComments}
-                        onNavigateComments={navigateComments}
+                        onNavigateComments={(dir) => {
+                            const n = currentCommentIndex + dir;
+                            if (n >= 0 && n < loadedComments.length) { setCurrentCommentIndex(n); setDraftComment(loadedComments[n]); }
+                        }}
                         setDraftComment={setDraftComment}
                         onSaveComment={saveComment}
-                        onDeleteComment={deleteComment}
-                        onLoadExistingComments={loadExistingComments}
                     />
                 </aside>
             </div>

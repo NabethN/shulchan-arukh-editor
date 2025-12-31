@@ -1,7 +1,10 @@
 import mysql from 'mysql2/promise';
+
 const isDevelopment = process.env.NODE_ENV === 'development';
 
-const pool = mysql.createPool({
+// שים לב: הורדתי את ה-export default pool
+// ובמקום זה אני מייצא משתנה בשם db
+export const db = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -10,15 +13,12 @@ const pool = mysql.createPool({
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    // התיקון הקריטי:
-    // ב-TiDB (ענן) חובה SSL.
-    // בלוקאלי - לפעמים זה מפריע, אז אנחנו מאפשרים חיבור גם אם התעודה לא מושלמת
     ssl: {
-        rejectUnauthorized: !isDevelopment // בלוקאלי (False) זה יעבוד גם בלי תעודות קפדניות
+        rejectUnauthorized: !isDevelopment
     }
 });
 
-export default pool;
+// export default pool;
 
 // // lib/db.js
 // import mysql from 'mysql2/promise';

@@ -1,23 +1,27 @@
 import { NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import { db } from '@/lib/db';
 
-export const dynamic = 'force-dynamic';
+export async function GET(req) {
+    const { searchParams } = new URL(req.url);
+    const versionId = searchParams.get('versionId');
 
-export async function GET(request) {
     try {
-        const { searchParams } = new URL(request.url);
-        const versionId = searchParams.get('versionId');
+        const query = `
+            SELECT DISTINCT
+                sm.comment_uuid as uuid,
+                sm.content,
+                s.content as quote,
+                s.position_in_group,       -- חובה עבור ORDER BY עם DISTINCT
+                sm.position_in_segment    -- חובה עבור ORDER BY עם DISTINCT
+            FROM seif_versions v
+            JOIN segment_groups sg ON sg.id = v.last_segment_group_id
+            JOIN segments s ON s.segment_group_id = sg.id
+            JOIN segment_markers sm ON sm.segment_id = s.id
+            WHERE v.id = ? AND sm.type = 'comment'
+            ORDER BY s.position_in_group ASC, sm.position_in_segment ASC
+        `;
 
-        if (!versionId) return NextResponse.json({ list: [] });
-
-        // שליפת כל ההערות ששייכות לגרסה הזו של הסעיף
-        const [rows] = await pool.query(`
-      SELECT annotation_uuid, content, quote_text, created_at 
-      FROM annotations 
-      WHERE segment_version_id = ? 
-      ORDER BY id ASC
-    `, [versionId]);
-
+        const [rows] = await db.query(query, [versionId]);
         return NextResponse.json({ list: rows });
     } catch (error) {
         return NextResponse.json({ error: error.message }, { status: 500 });

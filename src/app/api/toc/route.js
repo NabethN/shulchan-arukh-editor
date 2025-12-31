@@ -1,20 +1,25 @@
 import { NextResponse } from 'next/server';
-import pool from '@/lib/db';
-
-export const dynamic = 'force-dynamic'; // <--- הוסף
+import { db } from '@/lib/db';
 
 export async function GET() {
     try {
-        // שליפת כל ה"סימנים" שקיימים בספר, מסודרים לפי הסדר
-        const [rows] = await pool.query(`
-      SELECT title_he, order_index 
-      FROM structure_nodes 
-      WHERE node_type = 'siman' 
-      ORDER BY order_index ASC
-    `);
+        // עדכון: שימוש בטבלת simanim החדשה
+        const [rows] = await db.query(
+            `SELECT id, title, order_index 
+             FROM simanim 
+             ORDER BY order_index ASC`
+        );
 
-        return NextResponse.json({ items: rows });
+        const tocItems = rows.map(row => ({
+            id: row.id,     // זה ה-Siman ID
+            title: row.title,
+            index: row.order_index
+        }));
+
+        return NextResponse.json(tocItems);
+
     } catch (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error('Error fetching TOC:', error);
+        return NextResponse.json({ error: 'Failed to fetch TOC' }, { status: 500 });
     }
 }
